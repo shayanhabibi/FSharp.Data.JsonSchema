@@ -223,3 +223,60 @@ let definitionsTests =
             Expect.isTrue (components.ContainsKey "B") "has B"
         }
     ]
+
+#if NET10_0_OR_GREATER
+[<Tests>]
+let documentBindingTests =
+    testList "translator/documentBinding" [
+        test "translateForDocument registers component schemas and resolves references" {
+            let doc = {
+                Root = SchemaNode.AnyOf [SchemaNode.Ref "A"; SchemaNode.Ref "B"]
+                Definitions = [
+                    "A", SchemaNode.Primitive(PrimitiveType.String, None)
+                    "B", SchemaNode.Primitive(PrimitiveType.Integer, Some "int32")
+                ]
+            }
+            let document = OpenApiDocument()
+            let (schema: OASchema, _components) =
+                OpenApiSchemaTranslator.translateForDocument doc "Root" document
+            Expect.isNotNull (document.Components :> obj) "components created"
+            Expect.isTrue (document.Components.Schemas.ContainsKey "A") "A registered"
+            Expect.isTrue (document.Components.Schemas.ContainsKey "B") "B registered"
+            // Ref nodes are translated by mkRefSchema into a schema whose sole AnyOf
+            // element is the OpenApiSchemaReference; translateNode's return type is
+            // OpenApiSchema (not IOpenApiSchema), so the reference can't be returned
+            // unwrapped directly into the outer AnyOf collection — mirrors the unwrap
+            // pattern used below for the self-ref case.
+            let refWrapperA = schema.AnyOf.[0] :?> OASchema
+            let refA = refWrapperA.AnyOf.[0] :?> OpenApiSchemaReference
+            Expect.isNotNull (refA.Target :> obj) "ref A resolves to a non-null target"
+        }
+
+        test "translateForDocument binds self-ref to the given rootTypeId and registers the root component" {
+            let doc = {
+                Root = SchemaNode.Object {
+                    Properties = [
+                        { Name = "next"; Schema = SchemaNode.Nullable(SchemaNode.Ref "#"); Description = None }
+                    ]
+                    Required = []
+                    AdditionalProperties = false
+                    TypeId = None
+                    Description = None
+                    Title = None
+                }
+                Definitions = [
+                    "Unused", SchemaNode.Primitive(PrimitiveType.String, None)
+                ]
+            }
+            let document = OpenApiDocument()
+            let (schema: OASchema, _components) =
+                OpenApiSchemaTranslator.translateForDocument doc "LinkedNode" document
+            Expect.isTrue (document.Components.Schemas.ContainsKey "LinkedNode") "root registered under supplied rootTypeId, not the literal \"root\""
+            Expect.isFalse (document.Components.Schemas.ContainsKey "root") "literal \"root\" id is not used"
+            let nextWrapper = schema.Properties.["next"] :?> OpenApiSchema
+            let selfRef = nextWrapper.AnyOf.[0] :?> OpenApiSchemaReference
+            Expect.equal selfRef.Reference.Id "LinkedNode" "self-ref bound to supplied root type id"
+            Expect.isNotNull (selfRef.Target :> obj) "self-ref resolves to a non-null target"
+        }
+    ]
+#endif
