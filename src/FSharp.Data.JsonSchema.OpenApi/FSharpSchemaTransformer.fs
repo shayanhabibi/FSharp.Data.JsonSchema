@@ -85,6 +85,9 @@ type FSharpSchemaTransformer(config: SchemaGeneratorConfig) =
                 let rootTypeId = config.TypeIdResolver ty
                 let (translatedRoot, _componentSchemas) =
                     match context.Document with
+                    // This path produces the same dangling references that caused #30, but is only reachable
+                    // when ASP.NET invokes schema generation outside the real document-build flow — an
+                    // internal-only case not hit by the normal /openapi/{doc}.json request flow this fix targets.
                     | null -> OpenApiSchemaTranslator.translate doc
                     | document -> OpenApiSchemaTranslator.translateForDocument doc rootTypeId document
 #else

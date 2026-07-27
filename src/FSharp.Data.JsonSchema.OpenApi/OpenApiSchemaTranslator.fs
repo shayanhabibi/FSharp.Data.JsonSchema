@@ -241,6 +241,8 @@ module OpenApiSchemaTranslator =
                 for e in translated.Enum do
                     rootSchema.Enum.Add(e)
 #if NET10_0_OR_GREATER
+                // AddComponent is TryAdd (never throws, never overwrites); this runs before ASP.NET's own
+                // schema-id registration for the same type, so ours wins on an id collision — relied upon, not accidental.
                 document |> Option.iter (fun d -> d.AddComponent(rootTypeId, rootSchema) |> ignore)
 #endif
                 rootSchema

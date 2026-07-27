@@ -23,6 +23,12 @@ type TreeNode =
     | Leaf of int
     | Branch of TreeNode * TreeNode
 
+/// A second, differently-shaped self-recursive type, used to prove two
+/// self-recursive types in the same document don't collide on component id.
+type LinkedNode =
+    | Empty
+    | Node of value: int * next: LinkedNode
+
 let private startApp (mapEndpoints: WebApplication -> unit) : WebApplication =
     let builder = WebApplication.CreateBuilder()
     builder.Logging.ClearProviders() |> ignore
@@ -89,6 +95,30 @@ let endToEndTests =
                 Expect.isTrue (hasSchema root "Leaf") "Leaf registered as a component schema"
                 Expect.isTrue (hasSchema root "Branch") "Branch registered as a component schema"
                 Expect.isTrue (hasSchema root "TreeNode") "TreeNode root registered as a component schema (self-ref target)"
+#endif
+                ()
+            finally
+                app.StopAsync().GetAwaiter().GetResult()
+        }
+
+        test "OpenAPI document generation registers distinct components for two different self-recursive types" {
+            let app =
+                startApp (fun app ->
+                    app.MapGet("/tree", System.Func<TreeNode>(fun () -> Leaf 1)) |> ignore
+                    app.MapGet("/linked", System.Func<LinkedNode>(fun () -> Empty)) |> ignore
+                )
+            try
+                let (status, body) = getOpenApiDocument app
+                Expect.equal status System.Net.HttpStatusCode.OK "200 OK, not the InvalidOperationException from #30"
+                use jsonDoc = JsonDocument.Parse body
+#if NET10_0_OR_GREATER
+                let root = jsonDoc.RootElement
+                Expect.isTrue (hasSchema root "TreeNode") "TreeNode root registered as a component schema"
+                Expect.isTrue (hasSchema root "Leaf") "Leaf registered as a component schema"
+                Expect.isTrue (hasSchema root "Branch") "Branch registered as a component schema"
+                Expect.isTrue (hasSchema root "LinkedNode") "LinkedNode root registered as a component schema"
+                Expect.isTrue (hasSchema root "Empty") "Empty registered as a component schema"
+                Expect.isTrue (hasSchema root "Node") "Node registered as a component schema"
 #endif
                 ()
             finally
