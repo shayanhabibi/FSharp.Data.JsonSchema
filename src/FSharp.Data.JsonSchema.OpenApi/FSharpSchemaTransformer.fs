@@ -81,16 +81,18 @@ type FSharpSchemaTransformer(config: SchemaGeneratorConfig) =
             let ty = context.JsonTypeInfo.Type
             if isFSharpType ty then
                 let doc = SchemaAnalyzer.analyze config ty
-                let (translatedRoot, componentSchemas) = OpenApiSchemaTranslator.translate doc
+#if NET10_0_OR_GREATER
+                let rootTypeId = config.TypeIdResolver ty
+                let (translatedRoot, _componentSchemas) =
+                    match context.Document with
+                    | null -> OpenApiSchemaTranslator.translate doc
+                    | document -> OpenApiSchemaTranslator.translateForDocument doc rootTypeId document
+#else
+                let (translatedRoot, _componentSchemas) = OpenApiSchemaTranslator.translate doc
+#endif
 
                 // Mutate the provided schema in-place
                 copySchemaInto translatedRoot schema
-
-                // Register component schemas
-                // The transformer context doesn't expose document components directly,
-                // so we attach definitions as nested anyOf references.
-                // In a real integration, the document transformer or middleware
-                // would register these in components/schemas.
 
                 Task.CompletedTask
             else
