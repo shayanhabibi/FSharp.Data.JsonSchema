@@ -91,6 +91,9 @@ type FSharpSchemaTransformer(config: SchemaGeneratorConfig) =
                     | null -> OpenApiSchemaTranslator.translate doc
                     | document -> OpenApiSchemaTranslator.translateForDocument doc rootTypeId document
 #else
+                // net9 (Microsoft.OpenApi.Models) has no live-document concept to register
+                // components into — component schemas are never registered here, unchanged
+                // from before this fix; only the net10 path (above) registers them.
                 let (translatedRoot, _componentSchemas) = OpenApiSchemaTranslator.translate doc
 #endif
 

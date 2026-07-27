@@ -240,8 +240,11 @@ let documentBindingTests =
             let (schema: OASchema, _components) =
                 OpenApiSchemaTranslator.translateForDocument doc "Root" document
             Expect.isNotNull (document.Components :> obj) "components created"
-            Expect.isTrue (document.Components.Schemas.ContainsKey "A") "A registered"
-            Expect.isTrue (document.Components.Schemas.ContainsKey "B") "B registered"
+            // Definition ids are qualified with rootTypeId ("Root") when bound to a live
+            // document, so "A"/"B" register as "Root.A"/"Root.B" — see the case-collision
+            // test below for why.
+            Expect.isTrue (document.Components.Schemas.ContainsKey "Root.A") "A registered under its qualified id"
+            Expect.isTrue (document.Components.Schemas.ContainsKey "Root.B") "B registered under its qualified id"
             // Ref nodes are translated by mkRefSchema into a schema whose sole AnyOf
             // element is the OpenApiSchemaReference; translateNode's return type is
             // OpenApiSchema (not IOpenApiSchema), so the reference can't be returned
@@ -249,7 +252,28 @@ let documentBindingTests =
             // pattern used below for the self-ref case.
             let refWrapperA = schema.AnyOf.[0] :?> OASchema
             let refA = refWrapperA.AnyOf.[0] :?> OpenApiSchemaReference
+            Expect.equal refA.Reference.Id "Root.A" "ref points at the qualified id"
             Expect.isNotNull (refA.Target :> obj) "ref A resolves to a non-null target"
+        }
+
+        test "translateForDocument qualifies case ids so two types sharing a case name don't collide" {
+            let docTreeNode = {
+                Root = SchemaNode.Ref "Leaf"
+                Definitions = [ "Leaf", SchemaNode.Primitive(PrimitiveType.String, None) ]
+            }
+            let docPlant = {
+                Root = SchemaNode.Ref "Leaf"
+                Definitions = [ "Leaf", SchemaNode.Primitive(PrimitiveType.Integer, Some "int32") ]
+            }
+            let document = OpenApiDocument()
+            OpenApiSchemaTranslator.translateForDocument docTreeNode "TreeNode" document |> ignore
+            OpenApiSchemaTranslator.translateForDocument docPlant "Plant" document |> ignore
+            Expect.isTrue (document.Components.Schemas.ContainsKey "TreeNode.Leaf") "TreeNode's Leaf case registered under a qualified id"
+            Expect.isTrue (document.Components.Schemas.ContainsKey "Plant.Leaf") "Plant's Leaf case registered under a qualified id"
+            let treeLeaf = document.Components.Schemas.["TreeNode.Leaf"] :?> OASchema
+            let plantLeaf = document.Components.Schemas.["Plant.Leaf"] :?> OASchema
+            Expect.equal treeLeaf.Type (System.Nullable(JsonSchemaType.String)) "TreeNode's Leaf kept its own (string) type, not overwritten by Plant's"
+            Expect.equal plantLeaf.Type (System.Nullable(JsonSchemaType.Integer)) "Plant's Leaf kept its own (integer) type, not overwritten by TreeNode's"
         }
 
         test "translateForDocument binds self-ref to the given rootTypeId and registers the root component" {

@@ -120,6 +120,21 @@ module OpenApiSchemaTranslator =
         let componentSchemas = Collections.Generic.Dictionary<string, OpenApiSchema>()
         let rootSchema = mkSchema ()
 
+        // Case/definition-level ids are qualified with `rootTypeId` only when bound to a live
+        // document, so two different types that happen to share a case name (e.g. both having
+        // an "Error" case) register distinct components instead of the second silently
+        // overwriting the first. The document-agnostic `translate` entry point (document = None)
+        // keeps ids unqualified, since it never registers into a shared namespace.
+        // The "." separator (valid in OpenAPI component ids) is required, not cosmetic: without
+        // it, two different (rootTypeId, typeId) pairs can concatenate to the same string (e.g.
+        // "Order" + "LineItem" = "OrderLine" + "Item" = "OrderLineItem") — same collision class
+        // this qualification exists to close, just narrower. Neither a .NET Type.Name nor an
+        // F# union case name can contain ".", so the split stays unambiguous.
+        let qualify (typeId: string) : string =
+            match document with
+            | Some _ -> rootTypeId + "." + typeId
+            | None -> typeId
+
         let rec translateNode (node: SchemaNode) : OpenApiSchema =
             match node with
             | SchemaNode.Object obj ->
@@ -178,7 +193,7 @@ module OpenApiSchemaTranslator =
                 schema
 
             | SchemaNode.Ref typeId ->
-                let resolvedId = if typeId = "#" then rootTypeId else typeId
+                let resolvedId = if typeId = "#" then rootTypeId else qualify typeId
 #if NET10_0_OR_GREATER
                 mkRefSchema document resolvedId
 #else
@@ -205,9 +220,10 @@ module OpenApiSchemaTranslator =
         // document (when supplied) as it's produced.
         for (key, value) in doc.Definitions do
             let componentSchema = translateNode value
-            componentSchemas.[key] <- componentSchema
+            let registeredKey = qualify key
+            componentSchemas.[registeredKey] <- componentSchema
 #if NET10_0_OR_GREATER
-            document |> Option.iter (fun d -> d.AddComponent(key, componentSchema) |> ignore)
+            document |> Option.iter (fun d -> d.AddComponent(registeredKey, componentSchema) |> ignore)
 #endif
 
         // Translate root
@@ -250,9 +266,11 @@ module OpenApiSchemaTranslator =
         (result, componentSchemas |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq)
 
     /// Translate a SchemaDocument to an OpenApiSchema and component schemas.
-    /// Self-refs and component references are unbound (no host document) — suitable for
-    /// structural inspection but not for live OpenAPI document generation, where
-    /// `translateForDocument` must be used instead so references actually resolve.
+    /// On net10, self-refs and component references are left unbound (no host document) —
+    /// suitable for structural inspection but not for live OpenAPI document generation,
+    /// where `translateForDocument` must be used instead so references actually resolve.
+    /// On net9, references are always produced via `OpenApiReference` metadata directly;
+    /// this distinction doesn't apply there.
     let translate (doc: SchemaDocument) : OpenApiSchema * Map<string, OpenApiSchema> =
         translateCore doc "root" None
 
@@ -260,7 +278,11 @@ module OpenApiSchemaTranslator =
     /// Translate a SchemaDocument, binding component and self-ref references to a live
     /// OpenApiDocument so they resolve correctly, and registering component schemas
     /// — including the root schema itself, under `rootTypeId`, whenever there are any
-    /// definitions — into `document.Components.Schemas`.
+    /// definitions — into `document.Components.Schemas`. The returned component map
+    /// mirrors `translate`'s signature; registration already happened as a side effect
+    /// against `document`, so callers that only need the live document can discard it.
     let translateForDocument (doc: SchemaDocument) (rootTypeId: string) (document: OpenApiDocument) : OpenApiSchema * Map<string, OpenApiSchema> =
+        if String.IsNullOrEmpty rootTypeId then
+            invalidArg (nameof rootTypeId) "rootTypeId must not be null or empty"
         translateCore doc rootTypeId (Some document)
 #endif
