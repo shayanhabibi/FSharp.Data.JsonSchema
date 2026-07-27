@@ -15,6 +15,7 @@
   <ItemGroup>
     <Compile Include="TranslatorTests.fs" />
     <Compile Include="TransformerIntegrationTests.fs" />
+    <Compile Include="EndToEndTests.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
   <ItemGroup>
