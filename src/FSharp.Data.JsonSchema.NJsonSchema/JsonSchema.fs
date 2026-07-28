@@ -82,7 +82,10 @@ type OptionSchemaProcessor() =
             schema.Type <- schemaType
 
     interface ISchemaProcessor with
+        // FS0044: delegates to the type's own (also Obsolete) Process member.
+#nowarn "44"
         member this.Process(context) = this.Process(context)
+#warnon "44"
 
 [<Obsolete("No longer used internally. Use FSharp.Data.JsonSchema.Core.SchemaAnalyzer instead.")>]
 type SingleCaseDuSchemaProcessor() =
@@ -102,7 +105,10 @@ type SingleCaseDuSchemaProcessor() =
                 schema.EnumerationNames.Add(case.Name)
 
     interface ISchemaProcessor with
+        // FS0044: delegates to the type's own (also Obsolete) Process member.
+#nowarn "44"
         member this.Process(context) = this.Process(context)
+#warnon "44"
 
 [<Obsolete("No longer used internally. Use FSharp.Data.JsonSchema.Core.SchemaAnalyzer instead.")>]
 type MultiCaseDuSchemaProcessor(?casePropertyName) =
@@ -200,15 +206,21 @@ type MultiCaseDuSchemaProcessor(?casePropertyName) =
                                 s.RequiredProperties.Add(camelCaseFieldName)
                         s
 
-                // Attach each case definition.
+                // Attach each case definition. FS0044: Dictionary is Obsolete but still the
+                // internal helper this Obsolete processor type relies on.
+#nowarn "44"
                 let name = Dictionary.getUniqueKey schema.Definitions case.Name
+#warnon "44"
                 // printfn "Adding case %s to dict: %A" name schema.Definitions
                 schema.Definitions.Add(name, caseSchema)
                 // Add each schema to the anyOf collection.
                 schema.AnyOf.Add(JsonSchema(Reference = caseSchema))
 
     interface ISchemaProcessor with
+        // FS0044: delegates to the type's own (also Obsolete) Process member.
+#nowarn "44"
         member this.Process(context) = this.Process(context)
+#warnon "44"
 
 
 [<Obsolete("No longer used internally. Use FSharp.Data.JsonSchema.Core.SchemaAnalyzer instead.")>]
@@ -230,7 +242,10 @@ type RecordSchemaProcessor() =
                     property.IsRequired <- true
 
     interface ISchemaProcessor with
+        // FS0044: delegates to the type's own (also Obsolete) Process member.
+#nowarn "44"
         member this.Process(context) = this.Process(context)
+#warnon "44"
 
 
 
@@ -332,8 +347,8 @@ type Generator private () =
                                     | :? System.ComponentModel.DataAnnotations.MaxLengthAttribute as ml ->
                                         prop.MaxLength <- Nullable ml.Length
                                     | :? System.ComponentModel.DataAnnotations.RangeAttribute as r ->
-                                        prop.Minimum <- Nullable (Convert.ToDecimal(r.Minimum :> obj))
-                                        prop.Maximum <- Nullable (Convert.ToDecimal(r.Maximum :> obj))
+                                        prop.Minimum <- Nullable (Convert.ToDecimal r.Minimum)
+                                        prop.Maximum <- Nullable (Convert.ToDecimal r.Maximum)
                                     | _ -> ()
                             | _ -> ()
                 applyAnnotations ty schema
