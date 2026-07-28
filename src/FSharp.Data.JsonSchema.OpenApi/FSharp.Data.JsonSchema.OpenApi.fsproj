@@ -25,6 +25,12 @@
 
   <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.10" />
+    <!-- Explicit floor above the transitive default (2.0.0), which is affected by
+         GHSA-v5pm-xwqc-g5wc (stack overflow parsing circular schema refs; patched at 2.7.5+).
+         We only generate documents, never parse untrusted ones, so exposure was low, but
+         there's no reason to ship a known-vulnerable transitive version when pinning above it
+         costs nothing. -->
+    <PackageReference Include="Microsoft.OpenApi" Version="2.9.0" />
   </ItemGroup>
 
 </Project>
