@@ -62,9 +62,18 @@ module OpenApiSchemaTranslator =
     let private setDefault (schema: OpenApiSchema) (value: string) =
         schema.Default <- JsonValue.Create(value)
 
-    let private mkRefSchema (typeId: string) : OpenApiSchema =
+    /// Builds a schema wrapping a single reference. When `document` is supplied, the
+    /// reference is bound to it so `.Target` resolves once the id is registered via
+    /// `document.AddComponent` — see `translateCore`. When `document` is `None` (the
+    /// document-agnostic `translate` entry point), the reference is left unbound, matching
+    /// today's behavior for callers that only inspect the translated shape.
+    let private mkRefSchema (document: OpenApiDocument option) (typeId: string) : OpenApiSchema =
         let s = mkSchema ()
-        s.AnyOf.Add(OpenApiSchemaReference(typeId, null))
+        let reference =
+            match document with
+            | Some doc -> OpenApiSchemaReference(typeId, doc)
+            | None -> OpenApiSchemaReference(typeId, null)
+        s.AnyOf.Add(reference)
         s
 #else
     let private setType (schema: OpenApiSchema) (pt: CorePrimitiveType) =
@@ -98,10 +107,33 @@ module OpenApiSchemaTranslator =
 
     // ── Core translation ──
 
-    /// Translate a SchemaDocument to an OpenApiSchema and component schemas.
-    let translate (doc: SchemaDocument) : OpenApiSchema * Map<string, OpenApiSchema> =
+    /// Shared translation implementation. `rootTypeId` names the component a self-ref
+    /// ("#") binds to. `document`, when supplied (net10 only), is the live OpenApiDocument
+    /// to register component schemas into and bind references against, so they actually
+    /// resolve once ASP.NET walks the tree. When `None`, references are left unbound,
+    /// which is correct for the document-agnostic `translate` entry point.
+    let private translateCore
+        (doc: SchemaDocument)
+        (rootTypeId: string)
+        (document: OpenApiDocument option)
+        : OpenApiSchema * Map<string, OpenApiSchema> =
         let componentSchemas = Collections.Generic.Dictionary<string, OpenApiSchema>()
         let rootSchema = mkSchema ()
+
+        // Case/definition-level ids are qualified with `rootTypeId` only when bound to a live
+        // document, so two different types that happen to share a case name (e.g. both having
+        // an "Error" case) register distinct components instead of the second silently
+        // overwriting the first. The document-agnostic `translate` entry point (document = None)
+        // keeps ids unqualified, since it never registers into a shared namespace.
+        // The "." separator (valid in OpenAPI component ids) is required, not cosmetic: without
+        // it, two different (rootTypeId, typeId) pairs can concatenate to the same string (e.g.
+        // "Order" + "LineItem" = "OrderLine" + "Item" = "OrderLineItem") — same collision class
+        // this qualification exists to close, just narrower. Neither a .NET Type.Name nor an
+        // F# union case name can contain ".", so the split stays unambiguous.
+        let qualify (typeId: string) : string =
+            match document with
+            | Some _ -> rootTypeId + "." + typeId
+            | None -> typeId
 
         let rec translateNode (node: SchemaNode) : OpenApiSchema =
             match node with
@@ -161,10 +193,12 @@ module OpenApiSchemaTranslator =
                 schema
 
             | SchemaNode.Ref typeId ->
-                if typeId = "#" then
-                    mkRefSchema (rootSchema.Title |> Option.ofObj |> Option.defaultValue "root")
-                else
-                    mkRefSchema typeId
+                let resolvedId = if typeId = "#" then rootTypeId else qualify typeId
+#if NET10_0_OR_GREATER
+                mkRefSchema document resolvedId
+#else
+                mkRefSchema resolvedId
+#endif
 
             | SchemaNode.Map valueSchema ->
                 let schema = mkSchema ()
@@ -182,15 +216,22 @@ module OpenApiSchemaTranslator =
             | SchemaNode.Any ->
                 mkSchema ()
 
-        // Translate definitions into component schemas
+        // Translate definitions into component schemas, registering each into the live
+        // document (when supplied) as it's produced.
         for (key, value) in doc.Definitions do
-            componentSchemas.[key] <- translateNode value
+            let componentSchema = translateNode value
+            let registeredKey = qualify key
+            componentSchemas.[registeredKey] <- componentSchema
+#if NET10_0_OR_GREATER
+            document |> Option.iter (fun d -> d.AddComponent(registeredKey, componentSchema) |> ignore)
+#endif
 
         // Translate root
         let translated = translateNode doc.Root
 
         // If no definitions, return translated directly.
-        // Otherwise copy into rootSchema (which is pre-allocated for self-references).
+        // Otherwise copy into rootSchema (which is pre-allocated for self-references),
+        // and register it under rootTypeId so a "#" self-ref elsewhere resolves to it.
         let result =
             if List.isEmpty doc.Definitions then
                 translated
@@ -215,6 +256,33 @@ module OpenApiSchemaTranslator =
                     rootSchema.OneOf.Add(s)
                 for e in translated.Enum do
                     rootSchema.Enum.Add(e)
+#if NET10_0_OR_GREATER
+                // AddComponent is TryAdd (never throws, never overwrites); this runs before ASP.NET's own
+                // schema-id registration for the same type, so ours wins on an id collision — relied upon, not accidental.
+                document |> Option.iter (fun d -> d.AddComponent(rootTypeId, rootSchema) |> ignore)
+#endif
                 rootSchema
 
         (result, componentSchemas |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq)
+
+    /// Translate a SchemaDocument to an OpenApiSchema and component schemas.
+    /// On net10, self-refs and component references are left unbound (no host document) —
+    /// suitable for structural inspection but not for live OpenAPI document generation,
+    /// where `translateForDocument` must be used instead so references actually resolve.
+    /// On net9, references are always produced via `OpenApiReference` metadata directly;
+    /// this distinction doesn't apply there.
+    let translate (doc: SchemaDocument) : OpenApiSchema * Map<string, OpenApiSchema> =
+        translateCore doc "root" None
+
+#if NET10_0_OR_GREATER
+    /// Translate a SchemaDocument, binding component and self-ref references to a live
+    /// OpenApiDocument so they resolve correctly, and registering component schemas
+    /// — including the root schema itself, under `rootTypeId`, whenever there are any
+    /// definitions — into `document.Components.Schemas`. The returned component map
+    /// mirrors `translate`'s signature; registration already happened as a side effect
+    /// against `document`, so callers that only need the live document can discard it.
+    let translateForDocument (doc: SchemaDocument) (rootTypeId: string) (document: OpenApiDocument) : OpenApiSchema * Map<string, OpenApiSchema> =
+        if String.IsNullOrEmpty rootTypeId then
+            invalidArg (nameof rootTypeId) "rootTypeId must not be null or empty"
+        translateCore doc rootTypeId (Some document)
+#endif

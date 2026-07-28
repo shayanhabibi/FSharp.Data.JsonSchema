@@ -254,6 +254,13 @@ type Generator private () =
     static let cache =
         Collections.Concurrent.ConcurrentDictionary<(string * Core.UnionEncodingStyle) * Type, JsonSchema>()
 
+    // Namotion.Reflection (used by SchemaNameGenerator.Generate below, and internally by
+    // NJsonSchema's own base generator) keeps global, non-thread-safe type-metadata caches.
+    // Concurrent schema generation for different types — e.g. under a parallel test runner —
+    // can corrupt them and throw "_type is not initialized" from CachedType.get_Type(). Since
+    // we don't control that dependency's internals, serialize our own entry point into it.
+    static let generationLock = obj ()
+
     static member internal CreateInternal(?casePropertyName, ?unionEncoding) =
         let casePropertyName' = defaultArg casePropertyName FSharp.Data.Json.DefaultCasePropertyName
         let nameGen = SchemaNameGenerator()
@@ -284,56 +291,57 @@ type Generator private () =
             typeByName
 
         fun (ty: Type) ->
-            let doc = Core.SchemaAnalyzer.analyze config ty
-            let schema = NJsonSchemaTranslator.translate doc
-            // Set title using the same logic as the old SchemaNameGenerator
-            // Don't set title for bare option/voption types (they produce empty schemas)
-            match doc.Root with
-            | Core.SchemaNode.Any -> ()
-            | _ ->
-                let title = nameGen.Generate(ty)
-                if not (System.String.IsNullOrEmpty title) then
-                    schema.Title <- title
-            // Add empty description for .NET enums (matching NJsonSchema behavior)
-            if Reflection.isIntegerEnum ty then
-                schema.Description <- ""
-            // Set additionalProperties = false for fieldless DU enums
-            if FSharpType.IsUnion(ty) && Reflection.allCasesEmpty ty then
-                schema.AllowAdditionalProperties <- false
-            // Apply post-processing to definitions based on their F# types
-            let typeMap = collectTypeMap ty
-            for kv in schema.Definitions do
-                match typeMap.TryGetValue(kv.Key) with
-                | true, defTy ->
-                    if Reflection.isIntegerEnum defTy then
-                        kv.Value.Description <- ""
-                    elif FSharpType.IsUnion(defTy, true) && Reflection.allCasesEmpty defTy then
-                        kv.Value.AllowAdditionalProperties <- false
-                | _ -> ()
-            // Apply DataAnnotation attributes from record fields
-            let applyAnnotations (recordTy: Type) (targetSchema: JsonSchema) =
-                if FSharpType.IsRecord(recordTy, true) then
-                    for field in FSharpType.GetRecordFields(recordTy, true) do
-                        let propName = config.PropertyNamingPolicy field.Name
-                        match targetSchema.Properties.TryGetValue(propName) with
-                        | true, prop ->
-                            for attr in field.GetCustomAttributes(true) do
-                                match attr with
-                                | :? System.ComponentModel.DataAnnotations.RequiredAttribute ->
-                                    prop.MinLength <- 1
-                                | :? System.ComponentModel.DataAnnotations.MaxLengthAttribute as ml ->
-                                    prop.MaxLength <- Nullable ml.Length
-                                | :? System.ComponentModel.DataAnnotations.RangeAttribute as r ->
-                                    prop.Minimum <- Nullable (Convert.ToDecimal(r.Minimum :> obj))
-                                    prop.Maximum <- Nullable (Convert.ToDecimal(r.Maximum :> obj))
-                                | _ -> ()
-                        | _ -> ()
-            applyAnnotations ty schema
-            for kv in schema.Definitions do
-                match typeMap.TryGetValue(kv.Key) with
-                | true, defTy -> applyAnnotations defTy kv.Value
-                | _ -> ()
-            schema
+            lock generationLock (fun () ->
+                let doc = Core.SchemaAnalyzer.analyze config ty
+                let schema = NJsonSchemaTranslator.translate doc
+                // Set title using the same logic as the old SchemaNameGenerator
+                // Don't set title for bare option/voption types (they produce empty schemas)
+                match doc.Root with
+                | Core.SchemaNode.Any -> ()
+                | _ ->
+                    let title = nameGen.Generate(ty)
+                    if not (System.String.IsNullOrEmpty title) then
+                        schema.Title <- title
+                // Add empty description for .NET enums (matching NJsonSchema behavior)
+                if Reflection.isIntegerEnum ty then
+                    schema.Description <- ""
+                // Set additionalProperties = false for fieldless DU enums
+                if FSharpType.IsUnion(ty) && Reflection.allCasesEmpty ty then
+                    schema.AllowAdditionalProperties <- false
+                // Apply post-processing to definitions based on their F# types
+                let typeMap = collectTypeMap ty
+                for kv in schema.Definitions do
+                    match typeMap.TryGetValue(kv.Key) with
+                    | true, defTy ->
+                        if Reflection.isIntegerEnum defTy then
+                            kv.Value.Description <- ""
+                        elif FSharpType.IsUnion(defTy, true) && Reflection.allCasesEmpty defTy then
+                            kv.Value.AllowAdditionalProperties <- false
+                    | _ -> ()
+                // Apply DataAnnotation attributes from record fields
+                let applyAnnotations (recordTy: Type) (targetSchema: JsonSchema) =
+                    if FSharpType.IsRecord(recordTy, true) then
+                        for field in FSharpType.GetRecordFields(recordTy, true) do
+                            let propName = config.PropertyNamingPolicy field.Name
+                            match targetSchema.Properties.TryGetValue(propName) with
+                            | true, prop ->
+                                for attr in field.GetCustomAttributes(true) do
+                                    match attr with
+                                    | :? System.ComponentModel.DataAnnotations.RequiredAttribute ->
+                                        prop.MinLength <- 1
+                                    | :? System.ComponentModel.DataAnnotations.MaxLengthAttribute as ml ->
+                                        prop.MaxLength <- Nullable ml.Length
+                                    | :? System.ComponentModel.DataAnnotations.RangeAttribute as r ->
+                                        prop.Minimum <- Nullable (Convert.ToDecimal(r.Minimum :> obj))
+                                        prop.Maximum <- Nullable (Convert.ToDecimal(r.Maximum :> obj))
+                                    | _ -> ()
+                            | _ -> ()
+                applyAnnotations ty schema
+                for kv in schema.Definitions do
+                    match typeMap.TryGetValue(kv.Key) with
+                    | true, defTy -> applyAnnotations defTy kv.Value
+                    | _ -> ()
+                schema)
 
     /// Creates a generator using the specified casePropertyName and unionEncoding.
     static member Create(?casePropertyName, ?unionEncoding) =

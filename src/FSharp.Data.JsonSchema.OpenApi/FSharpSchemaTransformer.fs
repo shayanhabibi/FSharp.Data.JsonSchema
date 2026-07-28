@@ -81,16 +81,24 @@ type FSharpSchemaTransformer(config: SchemaGeneratorConfig) =
             let ty = context.JsonTypeInfo.Type
             if isFSharpType ty then
                 let doc = SchemaAnalyzer.analyze config ty
-                let (translatedRoot, componentSchemas) = OpenApiSchemaTranslator.translate doc
+#if NET10_0_OR_GREATER
+                let rootTypeId = config.TypeIdResolver ty
+                let (translatedRoot, _componentSchemas) =
+                    match context.Document with
+                    // This path produces the same dangling references that caused #30, but is only reachable
+                    // when ASP.NET invokes schema generation outside the real document-build flow — an
+                    // internal-only case not hit by the normal /openapi/{doc}.json request flow this fix targets.
+                    | null -> OpenApiSchemaTranslator.translate doc
+                    | document -> OpenApiSchemaTranslator.translateForDocument doc rootTypeId document
+#else
+                // net9 (Microsoft.OpenApi.Models) has no live-document concept to register
+                // components into — component schemas are never registered here, unchanged
+                // from before this fix; only the net10 path (above) registers them.
+                let (translatedRoot, _componentSchemas) = OpenApiSchemaTranslator.translate doc
+#endif
 
                 // Mutate the provided schema in-place
                 copySchemaInto translatedRoot schema
-
-                // Register component schemas
-                // The transformer context doesn't expose document components directly,
-                // so we attach definitions as nested anyOf references.
-                // In a real integration, the document transformer or middleware
-                // would register these in components/schemas.
 
                 Task.CompletedTask
             else

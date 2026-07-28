@@ -1,3 +1,19 @@
+### FSharp.Data.JsonSchema.OpenApi 3.1.0
+
+* Fix `InvalidOperationException: The input schema must be an OpenApiSchema or OpenApiSchemaReference` thrown by `Microsoft.AspNetCore.OpenApi` 10.0.3+ for any endpoint whose request/response type is (or contains) an F# discriminated union or a self-recursive type (#30)
+* `FSharpSchemaTransformer` now registers component schemas into the live `OpenApiDocument` on net10 instead of leaving them unregistered with dangling references
+* Fix self-recursive types (e.g. a tree or linked-list shaped DU) all resolving their self-reference to the same hardcoded component id on net10; each now gets its own correctly-named component
+* On net10, definition/component ids (DU cases and nested referenced types alike) are now qualified by their owning root type's name (e.g. `TreeNode.Leaf` instead of `Leaf`), so two different types that happen to share a case or type name no longer silently collide in `components/schemas`
+* Pin the net10 `Microsoft.OpenApi` dependency to 2.9.0 (was transitively 2.0.0), above the version affected by GHSA-v5pm-xwqc-g5wc
+
+### FSharp.Data.JsonSchema.NJsonSchema 3.1.0
+
+* No changes (version bump for consistency)
+
+### FSharp.Data.JsonSchema.Core 3.1.0
+
+* No changes (version bump for consistency)
+
 ### FSharp.Data.JsonSchema.NJsonSchema 3.0.1
 
 * Fix recursive type serialization for self-referential types with nullable fields
