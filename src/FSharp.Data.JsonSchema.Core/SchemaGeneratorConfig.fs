@@ -65,7 +65,7 @@ module SchemaGeneratorConfig =
         TypeIdResolver = defaultTypeIdResolver
         OptionStyle = OptionSchemaStyle.Nullable
         UnwrapSingleCaseDU = false
-        RecordFieldsRequired = true
+        RecordFieldsRequired = false
         UnwrapFieldlessTags = true
         TypeNamingPolicy = camelCase
     }

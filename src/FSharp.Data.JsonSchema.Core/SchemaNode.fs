@@ -77,7 +77,7 @@ and [<RequireQualifiedAccess>] SchemaNode =
     /// A map/dictionary with string keys and typed values.
     | Map of valueSchema: SchemaNode
     /// A constant value (used for discriminator tags).
-    | Const of value: string * primitiveType: PrimitiveType
+    | Const of value: string * primitiveType: PrimitiveType * description: string option
     /// Permissive schema with no type constraint.
     | Any
 

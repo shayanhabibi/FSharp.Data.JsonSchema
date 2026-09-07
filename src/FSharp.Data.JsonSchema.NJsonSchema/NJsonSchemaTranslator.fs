@@ -91,8 +91,10 @@ module internal NJsonSchemaTranslator =
             | Some f -> mkPropWithFormat (mapPrimitiveType pt) f
             | None -> mkProp (mapPrimitiveType pt)
 
-        | SchemaNode.Const(value, _) ->
-            mkConstProp value
+        | SchemaNode.Const(value, _, description) ->
+            let prop = mkConstProp value
+            description |> Option.iter (fun desc -> prop.Description <- desc)
+            prop
 
         | SchemaNode.Nullable inner ->
             match inner with
@@ -205,8 +207,10 @@ module internal NJsonSchemaTranslator =
                 s.EnumerationNames.Add(v)
             s
 
-        | SchemaNode.Const(value, _pt) ->
-            mkConstSchema value
+        | SchemaNode.Const(value, _pt, description) ->
+            let cnst = mkConstSchema value
+            description |> Option.iter (fun desc -> cnst.Description <- desc)
+            cnst
 
         | SchemaNode.Object obj ->
             let s = mkSchema JsonObjectType.Object
@@ -235,13 +239,16 @@ module internal NJsonSchemaTranslator =
             s.AllowAdditionalProperties <- true
             for caseSchema in schemas do
                 match caseSchema with
-                | SchemaNode.Const(value, _) ->
+                | SchemaNode.Const(value, _, description) ->
                     let constSchema = mkConstSchema value
+                    description |> Option.iter (fun desc -> constSchema.Description <- desc)
                     s.Definitions.Add(value, constSchema)
                     s.AnyOf.Add(mkRefSchema constSchema)
 
                 | SchemaNode.Object obj when obj.TypeId.IsSome ->
                     let caseJsonSchema = translateNode rootSchema s defs caseSchema
+                    obj.Description
+                    |> Option.iter (fun desc -> caseJsonSchema.Description <- desc)
                     let key = obj.TypeId.Value
                     s.Definitions.Add(key, caseJsonSchema)
                     s.AnyOf.Add(mkRefSchema caseJsonSchema)

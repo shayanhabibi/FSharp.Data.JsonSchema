@@ -18,6 +18,7 @@ module SchemaAnalyzer =
         Type: string option
         Cases: Map<string, UnionDescriptionAttributeData>
     }
+    /// Extracts all the relevant information from the union description attribute
     let private unionDescriptionAttributeData (attr: CustomAttributeData) =
         if attr.AttributeType <> typeof<UnionCaseDescriptionAttribute> then None else
         let case = attr.ConstructorArguments[0].Value :?> string
@@ -46,7 +47,8 @@ module SchemaAnalyzer =
             Fields = fields
             RenderName = renderName
         }
-            
+    
+    /// Retrieves the description attribute from a type or record field.
     let inline private tryGetDescription (value: ^T when ^T:(member GetCustomAttributesData: unit -> IList<CustomAttributeData>)) =
         let attrs = value.GetCustomAttributesData()
         attrs
@@ -58,6 +60,8 @@ module SchemaAnalyzer =
             | _ -> None
             )
         |> Option.map _.Trim()
+
+    /// Extracts all union description information from a type.
     let private getUnionDescriptions (ty: Type) (cases: UnionCaseInfo array) =
         let customAttributes = ty.GetCustomAttributesData()
         let unionDescriptions =
@@ -547,7 +551,7 @@ module SchemaAnalyzer =
             | UnionEncodingStyle.InternalTag ->
                 // InternalTag: discriminator + fields in same object
                 if Array.isEmpty fields then
-                    SchemaNode.Const(renderCaseName, PrimitiveType.String)
+                    SchemaNode.Const(renderCaseName, PrimitiveType.String, caseDescription)
                 else
                     let properties = ResizeArray<PropertySchema>()
                     let required = ResizeArray<string>()
@@ -555,7 +559,7 @@ module SchemaAnalyzer =
                     // Add discriminator property
                     let discProp = {
                         Name = config.DiscriminatorPropertyName
-                        Schema = SchemaNode.Const(renderCaseName, PrimitiveType.String)
+                        Schema = SchemaNode.Const(renderCaseName, PrimitiveType.String, caseDescription)
                         Description = caseDescription
                     }
                     properties.Add(discProp)
@@ -599,11 +603,11 @@ module SchemaAnalyzer =
             | UnionEncodingStyle.AdjacentTag ->
                 // AdjacentTag: {"tag": "CaseName", "fields": {...}}
                 if Array.isEmpty fields then
-                    SchemaNode.Const(renderCaseName, PrimitiveType.String)
+                    SchemaNode.Const(renderCaseName, PrimitiveType.String, caseDescription)
                 else
                     let tagProp = {
                         Name = config.DiscriminatorPropertyName
-                        Schema = SchemaNode.Const(renderCaseName, PrimitiveType.String)
+                        Schema = SchemaNode.Const(renderCaseName, PrimitiveType.String, caseDescription)
                         Description = caseDescription
                     }
 
@@ -743,7 +747,7 @@ module SchemaAnalyzer =
                 // Untagged: no discriminator, just fields directly
                 if Array.isEmpty fields then
                     // Fieldless case: serialize as case name string
-                    SchemaNode.Const(renderCaseName, PrimitiveType.String)
+                    SchemaNode.Const(renderCaseName, PrimitiveType.String, caseDescription)
                 else
                     // Build object with just the fields (no discriminator)
                     let properties = ResizeArray<PropertySchema>()
@@ -785,9 +789,16 @@ module SchemaAnalyzer =
 
         and analyzeMultiCaseDU (encodingStyle: UnionEncodingStyle) (ty: Type) : SchemaNode =
             let cases = FSharpType.GetUnionCases(ty, true)
+            let casesWithFields = cases |> Array.filter (_.GetFields() >> Array.isEmpty >> not)
+            let uniqueFieldCase = casesWithFields |> Array.length |> (=) 1
             let isRoot = (ty = targetType)
             let tyDescriptionData = getUnionDescriptions ty cases
-            let buildCaseSchema = buildCaseSchema tyDescriptionData encodingStyle
+            let buildCaseSchema = buildCaseSchema tyDescriptionData encodingStyle >> function
+                | caseName, schema when not uniqueFieldCase -> caseName, schema
+                | caseName, SchemaNode.Object ({ Properties= [ _; schema ] } as obj)
+                    when caseName.Equals(casesWithFields[0].Name |> config.TypeNamingPolicy) ->
+                    caseName, schema.Schema
+                | caseName, schema -> caseName, schema
 
             if isRoot then
                 // Root DU: register each case in definitions for correct ordering.
@@ -796,7 +807,7 @@ module SchemaAnalyzer =
                 let caseRefs = ResizeArray<SchemaNode>()
                 for case in cases do
                     let caseName, caseSchema = buildCaseSchema case
-                    definitions.[caseName] <- caseSchema
+                    definitions[caseName] <- caseSchema
                     caseRefs.Add(SchemaNode.Ref caseName)
                 SchemaNode.AnyOf(Seq.toList caseRefs)
             else
