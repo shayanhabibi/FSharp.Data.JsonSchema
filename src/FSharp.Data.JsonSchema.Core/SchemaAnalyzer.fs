@@ -8,7 +8,61 @@ open Microsoft.FSharp.Reflection
 
 /// Analyzes F# types and produces SchemaDocument values.
 module SchemaAnalyzer =
-
+    type private UnionDescriptionAttributeData = {
+        Case: string
+        Description: string
+        Fields: Map<string, string>
+    }
+    type private UnionDescriptions = {
+        Type: string option
+        Cases: Map<string, UnionDescriptionAttributeData>
+    }
+    let private unionDescriptionAttributeData (attr: CustomAttributeData) =
+        if attr.AttributeType <> typeof<UnionCaseDescriptionAttribute> then None else
+        let case = attr.ConstructorArguments[0].Value :?> string
+        let description = attr.ConstructorArguments[1].Value :?> string
+        let fields =
+            attr.NamedArguments
+            |> Seq.tryPick (function
+                | arg when arg.MemberName = "FieldDescriptions" -> Some (arg.TypedValue.Value :?> array<string * string>)
+                | _ -> None
+                )
+            |> Option.map Map.ofArray
+            |> Option.defaultValue Map.empty
+        Some {
+            Case = case
+            Description = description
+            Fields = fields
+        }
+            
+    let inline private tryGetDescription (value: ^T when ^T:(member GetCustomAttributesData: unit -> IList<CustomAttributeData>)) =
+        let attrs = value.GetCustomAttributesData()
+        attrs
+        |> Seq.tryPick (function
+            | attr when
+                attr.AttributeType = typeof<System.ComponentModel.DescriptionAttribute>
+                || attr.AttributeType = typeof<DescriptionAttribute> ->
+                attr.ConstructorArguments[0].Value |> tryUnbox<string>
+            | _ -> None
+            )
+    let private getUnionDescriptions (ty: Type) (cases: UnionCaseInfo array) =
+        let customAttributes = ty.GetCustomAttributesData()
+        let unionDescriptions =
+            customAttributes
+            |> Seq.choose unionDescriptionAttributeData
+            |> Seq.toArray
+        {
+            Type = tryGetDescription ty
+            Cases =
+                cases
+                |> Array.choose (fun case ->
+                    unionDescriptions
+                    |> Array.tryFind (_.Case >> (=) case.Name)
+                    |> Option.map (fun data -> data.Case, data)
+                    )
+                |> Map.ofArray
+        }
+        
     let private isOption (ty: Type) =
         ty.IsGenericType
         && let def = ty.GetGenericTypeDefinition()
@@ -344,28 +398,29 @@ module SchemaAnalyzer =
             for field in fields do
                 let propName = config.PropertyNamingPolicy field.Name
                 let fieldTy = field.PropertyType
+                let description = tryGetDescription field
 
                 if isOption fieldTy then
                     let innerTy = fieldTy.GetGenericArguments().[0]
                     if isInlineType innerTy then
                         let innerSchema = analyzeType innerTy
-                        properties.Add({ Name = propName; Schema = SchemaNode.Nullable innerSchema; Description = None })
+                        properties.Add({ Name = propName; Schema = SchemaNode.Nullable innerSchema; Description = description })
                     else
                         let typeId = getOrAnalyzeRef innerTy
-                        properties.Add({ Name = propName; Schema = SchemaNode.Nullable (SchemaNode.Ref typeId); Description = None })
+                        properties.Add({ Name = propName; Schema = SchemaNode.Nullable (SchemaNode.Ref typeId); Description = description })
                 elif fieldTy.IsGenericType && fieldTy.GetGenericTypeDefinition() = typedefof<Nullable<_>> then
                     let innerTy = fieldTy.GetGenericArguments().[0]
                     let innerSchema = analyzeType innerTy
-                    properties.Add({ Name = propName; Schema = SchemaNode.Nullable innerSchema; Description = None })
+                    properties.Add({ Name = propName; Schema = SchemaNode.Nullable innerSchema; Description = description })
                 elif isSkippable fieldTy then
                     let innerTy = fieldTy.GetGenericArguments().[0]
                     let innerSchema = analyzeFieldSchema innerTy
-                    properties.Add({ Name = propName; Schema = innerSchema; Description = None })
+                    properties.Add({ Name = propName; Schema = innerSchema; Description = description })
                     if config.RecordFieldsRequired then
                         required.Add(propName)
                 else
                     let schema = analyzeFieldSchema fieldTy
-                    properties.Add({ Name = propName; Schema = schema; Description = None })
+                    properties.Add({ Name = propName; Schema = schema; Description = description })
                     if config.RecordFieldsRequired then
                         required.Add(propName)
 
@@ -374,7 +429,7 @@ module SchemaAnalyzer =
                 Required = Seq.toList required
                 AdditionalProperties = config.AdditionalPropertiesDefault
                 TypeId = None
-                Description = None
+                Description = tryGetDescription ty
                 Title = None
             }
 
@@ -386,28 +441,29 @@ module SchemaAnalyzer =
             for field in fields do
                 let propName = config.PropertyNamingPolicy field.Name
                 let fieldTy = field.PropertyType
+                let description = tryGetDescription field
 
                 if isOption fieldTy then
                     let innerTy = fieldTy.GetGenericArguments().[0]
                     if isInlineType innerTy then
                         let innerSchema = analyzeType innerTy
-                        properties.Add({ Name = propName; Schema = SchemaNode.Nullable innerSchema; Description = None })
+                        properties.Add({ Name = propName; Schema = SchemaNode.Nullable innerSchema; Description = description })
                     else
                         let typeId = getOrAnalyzeRef innerTy
-                        properties.Add({ Name = propName; Schema = SchemaNode.Nullable (SchemaNode.Ref typeId); Description = None })
+                        properties.Add({ Name = propName; Schema = SchemaNode.Nullable (SchemaNode.Ref typeId); Description = description })
                 elif fieldTy.IsGenericType && fieldTy.GetGenericTypeDefinition() = typedefof<Nullable<_>> then
                     let innerTy = fieldTy.GetGenericArguments().[0]
                     let innerSchema = analyzeType innerTy
-                    properties.Add({ Name = propName; Schema = SchemaNode.Nullable innerSchema; Description = None })
+                    properties.Add({ Name = propName; Schema = SchemaNode.Nullable innerSchema; Description = description })
                 elif isSkippable fieldTy then
                     let innerTy = fieldTy.GetGenericArguments().[0]
                     let innerSchema = analyzeFieldSchema innerTy
-                    properties.Add({ Name = propName; Schema = innerSchema; Description = None })
+                    properties.Add({ Name = propName; Schema = innerSchema; Description = description })
                     if config.RecordFieldsRequired then
                         required.Add(propName)
                 else
                     let schema = analyzeFieldSchema fieldTy
-                    properties.Add({ Name = propName; Schema = schema; Description = None })
+                    properties.Add({ Name = propName; Schema = schema; Description = description })
                     if config.RecordFieldsRequired then
                         required.Add(propName)
 
@@ -416,13 +472,13 @@ module SchemaAnalyzer =
                 Required = Seq.toList required
                 AdditionalProperties = false
                 TypeId = Some (getTypeId ty)
-                Description = None
+                Description = tryGetDescription ty
                 Title = Some ty.Name
             }
 
         and analyzeClass (ty: Type) : SchemaNode =
             let props =
-                ty.GetProperties(Reflection.BindingFlags.Public ||| Reflection.BindingFlags.Instance)
+                ty.GetProperties(BindingFlags.Public ||| BindingFlags.Instance)
                 |> Array.filter (fun p -> p.CanRead && p.GetIndexParameters().Length = 0)
 
             let properties = ResizeArray<PropertySchema>()
@@ -430,14 +486,14 @@ module SchemaAnalyzer =
             for prop in props do
                 let propName = config.PropertyNamingPolicy prop.Name
                 let schema = analyzeFieldSchema prop.PropertyType
-                properties.Add({ Name = propName; Schema = schema; Description = None })
+                properties.Add({ Name = propName; Schema = schema; Description = tryGetDescription prop })
 
             SchemaNode.Object {
                 Properties = Seq.toList properties
                 Required = []
                 AdditionalProperties = false
                 TypeId = Some (getTypeId ty)
-                Description = None
+                Description = tryGetDescription ty
                 Title = Some ty.Name
             }
 
@@ -456,13 +512,18 @@ module SchemaAnalyzer =
             // Handle fieldless DUs as string enums
             if config.UnwrapFieldlessTags && allCasesEmpty ty then
                 let cases = FSharpType.GetUnionCases(ty, true)
-                let names = cases |> Array.map (fun c -> c.Name) |> Array.toList
+                let names = cases |> Array.map _.Name |> Array.toList
                 SchemaNode.Enum(names, PrimitiveType.String)
             else
                 analyzeMultiCaseDU encodingStyle ty
 
-        and buildCaseSchema (encodingStyle: UnionEncodingStyle) (case: Reflection.UnionCaseInfo) : SchemaNode =
+        and buildCaseSchema (descriptionData: UnionDescriptions) (encodingStyle: UnionEncodingStyle) (case: UnionCaseInfo) : SchemaNode =
             let fields = case.GetFields()
+            let caseDescriptionData =
+                descriptionData.Cases
+                |> Map.tryFind case.Name
+            let caseDescription =
+                caseDescriptionData |> Option.map _.Description
 
             match encodingStyle with
             | UnionEncodingStyle.InternalTag ->
@@ -477,7 +538,7 @@ module SchemaAnalyzer =
                     let discProp = {
                         Name = config.DiscriminatorPropertyName
                         Schema = SchemaNode.Const(case.Name, PrimitiveType.String)
-                        Description = None
+                        Description = caseDescription
                     }
                     properties.Add(discProp)
                     required.Add(config.DiscriminatorPropertyName)
@@ -486,23 +547,26 @@ module SchemaAnalyzer =
                     for field in fields do
                         let propName = config.PropertyNamingPolicy field.Name
                         let fieldTy = field.PropertyType
+                        let fieldDescription =
+                            caseDescriptionData
+                            |> Option.bind (fun d -> d.Fields |> Map.tryFind field.Name)
 
                         if isOption fieldTy then
                             let innerTy = fieldTy.GetGenericArguments().[0]
                             if innerTy = typeof<obj> then
-                                properties.Add({ Name = propName; Schema = SchemaNode.Any; Description = None })
+                                properties.Add({ Name = propName; Schema = SchemaNode.Any; Description = fieldDescription })
                             elif isInlineType innerTy then
-                                properties.Add({ Name = propName; Schema = analyzeType innerTy; Description = None })
+                                properties.Add({ Name = propName; Schema = analyzeType innerTy; Description = fieldDescription })
                             else
                                 let typeId = getOrAnalyzeRef innerTy
-                                properties.Add({ Name = propName; Schema = SchemaNode.Ref typeId; Description = None })
+                                properties.Add({ Name = propName; Schema = SchemaNode.Ref typeId; Description = fieldDescription })
                         elif isPrimitive fieldTy then
                             let schema = analyzeType fieldTy
-                            properties.Add({ Name = propName; Schema = schema; Description = None })
+                            properties.Add({ Name = propName; Schema = schema; Description = fieldDescription })
                             required.Add(propName)
                         else
                             let schema = analyzeDuCaseFieldSchema fieldTy
-                            properties.Add({ Name = propName; Schema = schema; Description = None })
+                            properties.Add({ Name = propName; Schema = schema; Description = fieldDescription })
                             required.Add(propName)
 
                     SchemaNode.Object {
@@ -510,7 +574,7 @@ module SchemaAnalyzer =
                         Required = Seq.toList required
                         AdditionalProperties = false
                         TypeId = Some case.Name
-                        Description = None
+                        Description = caseDescription
                         Title = None
                     }
 
@@ -522,7 +586,7 @@ module SchemaAnalyzer =
                     let tagProp = {
                         Name = config.DiscriminatorPropertyName
                         Schema = SchemaNode.Const(case.Name, PrimitiveType.String)
-                        Description = None
+                        Description = caseDescription
                     }
 
                     // Build the fields object
@@ -532,23 +596,26 @@ module SchemaAnalyzer =
                     for field in fields do
                         let propName = config.PropertyNamingPolicy field.Name
                         let fieldTy = field.PropertyType
+                        let fieldDescription =
+                            caseDescriptionData
+                            |> Option.bind (fun d -> d.Fields |> Map.tryFind field.Name)
 
                         if isOption fieldTy then
                             let innerTy = fieldTy.GetGenericArguments().[0]
                             if innerTy = typeof<obj> then
-                                fieldProperties.Add({ Name = propName; Schema = SchemaNode.Any; Description = None })
+                                fieldProperties.Add({ Name = propName; Schema = SchemaNode.Any; Description = fieldDescription })
                             elif isInlineType innerTy then
-                                fieldProperties.Add({ Name = propName; Schema = analyzeType innerTy; Description = None })
+                                fieldProperties.Add({ Name = propName; Schema = analyzeType innerTy; Description = fieldDescription })
                             else
                                 let typeId = getOrAnalyzeRef innerTy
-                                fieldProperties.Add({ Name = propName; Schema = SchemaNode.Ref typeId; Description = None })
+                                fieldProperties.Add({ Name = propName; Schema = SchemaNode.Ref typeId; Description = fieldDescription })
                         elif isPrimitive fieldTy then
                             let schema = analyzeType fieldTy
-                            fieldProperties.Add({ Name = propName; Schema = schema; Description = None })
+                            fieldProperties.Add({ Name = propName; Schema = schema; Description = fieldDescription })
                             fieldRequired.Add(propName)
                         else
                             let schema = analyzeDuCaseFieldSchema fieldTy
-                            fieldProperties.Add({ Name = propName; Schema = schema; Description = None })
+                            fieldProperties.Add({ Name = propName; Schema = schema; Description = fieldDescription })
                             fieldRequired.Add(propName)
 
                     let fieldsSchema = SchemaNode.Object {
@@ -571,7 +638,7 @@ module SchemaAnalyzer =
                         Required = [ config.DiscriminatorPropertyName; "fields" ]
                         AdditionalProperties = false
                         TypeId = Some case.Name
-                        Description = None
+                        Description = caseDescription
                         Title = None
                     }
 
@@ -590,14 +657,14 @@ module SchemaAnalyzer =
                     let caseProp = {
                         Name = case.Name
                         Schema = emptyObject
-                        Description = None
+                        Description = caseDescription
                     }
                     SchemaNode.Object {
                         Properties = [ caseProp ]
                         Required = [ case.Name ]
                         AdditionalProperties = false
                         TypeId = Some case.Name
-                        Description = None
+                        Description = caseDescription
                         Title = None
                     }
                 else
@@ -608,23 +675,26 @@ module SchemaAnalyzer =
                     for field in fields do
                         let propName = config.PropertyNamingPolicy field.Name
                         let fieldTy = field.PropertyType
+                        let fieldDescription =
+                            caseDescriptionData
+                            |> Option.bind (fun d -> d.Fields |> Map.tryFind field.Name)
 
                         if isOption fieldTy then
                             let innerTy = fieldTy.GetGenericArguments().[0]
                             if innerTy = typeof<obj> then
-                                fieldProperties.Add({ Name = propName; Schema = SchemaNode.Any; Description = None })
+                                fieldProperties.Add({ Name = propName; Schema = SchemaNode.Any; Description = fieldDescription })
                             elif isInlineType innerTy then
-                                fieldProperties.Add({ Name = propName; Schema = analyzeType innerTy; Description = None })
+                                fieldProperties.Add({ Name = propName; Schema = analyzeType innerTy; Description = fieldDescription })
                             else
                                 let typeId = getOrAnalyzeRef innerTy
-                                fieldProperties.Add({ Name = propName; Schema = SchemaNode.Ref typeId; Description = None })
+                                fieldProperties.Add({ Name = propName; Schema = SchemaNode.Ref typeId; Description = fieldDescription })
                         elif isPrimitive fieldTy then
                             let schema = analyzeType fieldTy
-                            fieldProperties.Add({ Name = propName; Schema = schema; Description = None })
+                            fieldProperties.Add({ Name = propName; Schema = schema; Description = fieldDescription })
                             fieldRequired.Add(propName)
                         else
                             let schema = analyzeDuCaseFieldSchema fieldTy
-                            fieldProperties.Add({ Name = propName; Schema = schema; Description = None })
+                            fieldProperties.Add({ Name = propName; Schema = schema; Description = fieldDescription })
                             fieldRequired.Add(propName)
 
                     let fieldsObject = SchemaNode.Object {
@@ -639,7 +709,7 @@ module SchemaAnalyzer =
                     let caseProp = {
                         Name = case.Name
                         Schema = fieldsObject
-                        Description = None
+                        Description = caseDescription
                     }
 
                     SchemaNode.Object {
@@ -647,7 +717,7 @@ module SchemaAnalyzer =
                         Required = [ case.Name ]
                         AdditionalProperties = false
                         TypeId = Some case.Name
-                        Description = None
+                        Description = caseDescription
                         Title = None
                     }
 
@@ -664,23 +734,26 @@ module SchemaAnalyzer =
                     for field in fields do
                         let propName = config.PropertyNamingPolicy field.Name
                         let fieldTy = field.PropertyType
+                        let fieldDescription =
+                            caseDescriptionData
+                            |> Option.bind (fun d -> d.Fields |> Map.tryFind field.Name)
 
                         if isOption fieldTy then
                             let innerTy = fieldTy.GetGenericArguments().[0]
                             if innerTy = typeof<obj> then
-                                properties.Add({ Name = propName; Schema = SchemaNode.Any; Description = None })
+                                properties.Add({ Name = propName; Schema = SchemaNode.Any; Description = fieldDescription })
                             elif isInlineType innerTy then
-                                properties.Add({ Name = propName; Schema = analyzeType innerTy; Description = None })
+                                properties.Add({ Name = propName; Schema = analyzeType innerTy; Description = fieldDescription })
                             else
                                 let typeId = getOrAnalyzeRef innerTy
-                                properties.Add({ Name = propName; Schema = SchemaNode.Ref typeId; Description = None })
+                                properties.Add({ Name = propName; Schema = SchemaNode.Ref typeId; Description = fieldDescription })
                         elif isPrimitive fieldTy then
                             let schema = analyzeType fieldTy
-                            properties.Add({ Name = propName; Schema = schema; Description = None })
+                            properties.Add({ Name = propName; Schema = schema; Description = fieldDescription })
                             required.Add(propName)
                         else
                             let schema = analyzeDuCaseFieldSchema fieldTy
-                            properties.Add({ Name = propName; Schema = schema; Description = None })
+                            properties.Add({ Name = propName; Schema = schema; Description = fieldDescription })
                             required.Add(propName)
 
                     SchemaNode.Object {
@@ -688,13 +761,15 @@ module SchemaAnalyzer =
                         Required = Seq.toList required
                         AdditionalProperties = false
                         TypeId = Some case.Name
-                        Description = None
+                        Description = caseDescription
                         Title = None
                     }
 
         and analyzeMultiCaseDU (encodingStyle: UnionEncodingStyle) (ty: Type) : SchemaNode =
             let cases = FSharpType.GetUnionCases(ty, true)
             let isRoot = (ty = targetType)
+            let tyDescriptionData = getUnionDescriptions ty cases
+            let buildCaseSchema = buildCaseSchema tyDescriptionData encodingStyle
 
             if isRoot then
                 // Root DU: register each case in definitions for correct ordering.
@@ -702,7 +777,7 @@ module SchemaAnalyzer =
                 // so the order becomes: [referenced type, case using it, ...].
                 let caseRefs = ResizeArray<SchemaNode>()
                 for case in cases do
-                    let caseSchema = buildCaseSchema encodingStyle case
+                    let caseSchema = buildCaseSchema case
                     definitions.[case.Name] <- caseSchema
                     caseRefs.Add(SchemaNode.Ref case.Name)
                 SchemaNode.AnyOf(Seq.toList caseRefs)
@@ -710,7 +785,7 @@ module SchemaAnalyzer =
                 // Non-root DU: inline case schemas in AnyOf (translator nests them)
                 let caseSchemas = ResizeArray<SchemaNode>()
                 for case in cases do
-                    caseSchemas.Add(buildCaseSchema encodingStyle case)
+                    caseSchemas.Add(buildCaseSchema case)
                 SchemaNode.AnyOf(Seq.toList caseSchemas)
 
         // Start analysis

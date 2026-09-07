@@ -81,6 +81,14 @@ and [<RequireQualifiedAccess>] SchemaNode =
     /// Permissive schema with no type constraint.
     | Any
 
+type DescriptionAttribute = System.ComponentModel.DescriptionAttribute
+[<System.AttributeUsage((* temporary *) System.AttributeTargets.All)>]
+type UnionCaseDescriptionAttribute(caseName: string, description: string) =
+    inherit System.Attribute()
+    member val CaseName = caseName
+    member val Description = description
+    member val FieldDescriptions: (string * string) array = [||] with get,set
+
 /// The result of analyzing a type: a root schema plus named definitions.
 type SchemaDocument = {
     /// The root schema node.
