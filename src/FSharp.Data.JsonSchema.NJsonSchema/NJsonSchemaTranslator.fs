@@ -68,7 +68,7 @@ module internal NJsonSchemaTranslator =
         | true, existing -> existing
         | false, _ ->
             let placeholder = JsonSchema()
-            defs.[typeId] <- placeholder
+            defs[typeId] <- placeholder
             placeholder
 
     /// Translate a SchemaNode to a JsonSchemaProperty for use in object properties.
@@ -121,6 +121,7 @@ module internal NJsonSchemaTranslator =
                 let p = JsonSchemaProperty()
                 p.Type <- translated.Type
                 p.Format <- translated.Format
+                p.Description <- translated.Description
                 p
 
         | SchemaNode.Array items ->
@@ -138,6 +139,7 @@ module internal NJsonSchemaTranslator =
             p.Format <- translated.Format
             p.AdditionalPropertiesSchema <- translated.AdditionalPropertiesSchema
             p.AllowAdditionalProperties <- translated.AllowAdditionalProperties
+            p.Description <- translated.Description
             // Copy AnyOf and OneOf collections for Choice types and other polymorphic schemas
             for item in translated.AnyOf do
                 p.AnyOf.Add(item)
@@ -193,6 +195,7 @@ module internal NJsonSchemaTranslator =
             | other ->
                 let inner = translateNode rootSchema parentSchema defs other
                 inner.Type <- inner.Type ||| JsonObjectType.Null
+                inner.Description <- inner.Description
                 inner
 
         | SchemaNode.Enum(values, _underlyingType) ->
@@ -208,9 +211,13 @@ module internal NJsonSchemaTranslator =
         | SchemaNode.Object obj ->
             let s = mkSchema JsonObjectType.Object
             s.AllowAdditionalProperties <- obj.AdditionalProperties
+            obj.Description
+            |> Option.iter (fun desc -> s.Description <- desc)
 
             for prop in obj.Properties do
                 let jsonProp = translateProp rootSchema s defs prop.Schema
+                prop.Description
+                |> Option.iter (fun desc -> jsonProp.Description <- desc)
                 s.Properties.Add(prop.Name, jsonProp)
 
             for req in obj.Required do
@@ -226,7 +233,6 @@ module internal NJsonSchemaTranslator =
         | SchemaNode.AnyOf schemas ->
             let s = JsonSchema()
             s.AllowAdditionalProperties <- true
-
             for caseSchema in schemas do
                 match caseSchema with
                 | SchemaNode.Const(value, _) ->
@@ -269,14 +275,17 @@ module internal NJsonSchemaTranslator =
 
         | SchemaNode.Map valueSchema ->
             let s = mkSchema JsonObjectType.Object
-            s.AdditionalPropertiesSchema <- translateNode rootSchema parentSchema defs valueSchema
+            let additionalPropertiesSchema = translateNode rootSchema parentSchema defs valueSchema
+            s.AdditionalPropertiesSchema <- additionalPropertiesSchema
             s.AllowAdditionalProperties <- true
+            s.Description <- additionalPropertiesSchema.Description
             s
 
     let private copySchemaInto (source: JsonSchema) (target: JsonSchema) =
         target.Type <- source.Type
         target.Format <- source.Format
         target.AllowAdditionalProperties <- source.AllowAdditionalProperties
+        target.Description <- source.Description
 
         for kv in source.Properties do
             target.Properties.Add(kv.Key, kv.Value)
@@ -302,7 +311,7 @@ module internal NJsonSchemaTranslator =
         let defs = Dictionary<string, JsonSchema>()
 
         // Pre-create all definition schemas so refs can resolve
-        for (key, _) in doc.Definitions do
+        for key, _ in doc.Definitions do
             if not (defs.ContainsKey key) then
                 defs.[key] <- JsonSchema()
 
@@ -315,7 +324,7 @@ module internal NJsonSchemaTranslator =
         copySchemaInto translatedRoot rootSchema
 
         // Translate and populate definitions
-        for (key, value) in doc.Definitions do
+        for key, value in doc.Definitions do
             let existing = defs.[key]
             let translated = translateNode rootSchema rootSchema defs value
             copySchemaInto translated existing

@@ -11,6 +11,7 @@ module SchemaAnalyzer =
     type private UnionDescriptionAttributeData = {
         Case: string
         Description: string
+        RenderName: string
         Fields: Map<string, string>
     }
     type private UnionDescriptions = {
@@ -27,12 +28,23 @@ module SchemaAnalyzer =
                 | arg when arg.MemberName = "FieldDescriptions" -> Some (arg.TypedValue.Value :?> array<string * string>)
                 | _ -> None
                 )
-            |> Option.map Map.ofArray
+            |> Option.map (
+                Array.map (fun (name, desc) -> name, desc.Trim())
+                >> Map.ofArray
+                )
             |> Option.defaultValue Map.empty
+        let renderName =
+            attr.NamedArguments
+            |> Seq.tryPick(function
+                | arg when arg.MemberName = "RenderName" -> Some (arg.TypedValue.Value :?> string)
+                | _ -> None
+                )
+            |> Option.defaultValue case
         Some {
             Case = case
-            Description = description
+            Description = description.Trim()
             Fields = fields
+            RenderName = renderName
         }
             
     let inline private tryGetDescription (value: ^T when ^T:(member GetCustomAttributesData: unit -> IList<CustomAttributeData>)) =
@@ -45,6 +57,7 @@ module SchemaAnalyzer =
                 attr.ConstructorArguments[0].Value |> tryUnbox<string>
             | _ -> None
             )
+        |> Option.map _.Trim()
     let private getUnionDescriptions (ty: Type) (cases: UnionCaseInfo array) =
         let customAttributes = ty.GetCustomAttributesData()
         let unionDescriptions =
@@ -187,7 +200,7 @@ module SchemaAnalyzer =
         let visiting = HashSet<Type>()
         let analyzed = Dictionary<Type, string>()
 
-        let getTypeId (ty: Type) = config.TypeIdResolver ty
+        let getTypeId (ty: Type) = config.TypeIdResolver ty |> config.TypeNamingPolicy
 
         /// Get or compute the ref for a complex type. Returns the typeId.
         /// If the type has already been analyzed, returns the existing typeId.
@@ -517,19 +530,24 @@ module SchemaAnalyzer =
             else
                 analyzeMultiCaseDU encodingStyle ty
 
-        and buildCaseSchema (descriptionData: UnionDescriptions) (encodingStyle: UnionEncodingStyle) (case: UnionCaseInfo) : SchemaNode =
+        and buildCaseSchema (descriptionData: UnionDescriptions) (encodingStyle: UnionEncodingStyle) (case: UnionCaseInfo) : string * SchemaNode =
             let fields = case.GetFields()
             let caseDescriptionData =
                 descriptionData.Cases
                 |> Map.tryFind case.Name
             let caseDescription =
                 caseDescriptionData |> Option.map _.Description
-
+            let renderCaseName =
+                caseDescriptionData
+                |> Option.map _.RenderName
+                |> Option.defaultValue case.Name
+                |> config.TypeNamingPolicy
+            renderCaseName, 
             match encodingStyle with
             | UnionEncodingStyle.InternalTag ->
                 // InternalTag: discriminator + fields in same object
                 if Array.isEmpty fields then
-                    SchemaNode.Const(case.Name, PrimitiveType.String)
+                    SchemaNode.Const(renderCaseName, PrimitiveType.String)
                 else
                     let properties = ResizeArray<PropertySchema>()
                     let required = ResizeArray<string>()
@@ -537,7 +555,7 @@ module SchemaAnalyzer =
                     // Add discriminator property
                     let discProp = {
                         Name = config.DiscriminatorPropertyName
-                        Schema = SchemaNode.Const(case.Name, PrimitiveType.String)
+                        Schema = SchemaNode.Const(renderCaseName, PrimitiveType.String)
                         Description = caseDescription
                     }
                     properties.Add(discProp)
@@ -573,7 +591,7 @@ module SchemaAnalyzer =
                         Properties = Seq.toList properties
                         Required = Seq.toList required
                         AdditionalProperties = false
-                        TypeId = Some case.Name
+                        TypeId = Some renderCaseName
                         Description = caseDescription
                         Title = None
                     }
@@ -581,11 +599,11 @@ module SchemaAnalyzer =
             | UnionEncodingStyle.AdjacentTag ->
                 // AdjacentTag: {"tag": "CaseName", "fields": {...}}
                 if Array.isEmpty fields then
-                    SchemaNode.Const(case.Name, PrimitiveType.String)
+                    SchemaNode.Const(renderCaseName, PrimitiveType.String)
                 else
                     let tagProp = {
                         Name = config.DiscriminatorPropertyName
-                        Schema = SchemaNode.Const(case.Name, PrimitiveType.String)
+                        Schema = SchemaNode.Const(renderCaseName, PrimitiveType.String)
                         Description = caseDescription
                     }
 
@@ -637,7 +655,7 @@ module SchemaAnalyzer =
                         Properties = [ tagProp; fieldsProp ]
                         Required = [ config.DiscriminatorPropertyName; "fields" ]
                         AdditionalProperties = false
-                        TypeId = Some case.Name
+                        TypeId = Some renderCaseName
                         Description = caseDescription
                         Title = None
                     }
@@ -655,15 +673,15 @@ module SchemaAnalyzer =
                         Title = None
                     }
                     let caseProp = {
-                        Name = case.Name
+                        Name = renderCaseName
                         Schema = emptyObject
                         Description = caseDescription
                     }
                     SchemaNode.Object {
                         Properties = [ caseProp ]
-                        Required = [ case.Name ]
+                        Required = [ renderCaseName ]
                         AdditionalProperties = false
-                        TypeId = Some case.Name
+                        TypeId = Some renderCaseName
                         Description = caseDescription
                         Title = None
                     }
@@ -707,16 +725,16 @@ module SchemaAnalyzer =
                     }
 
                     let caseProp = {
-                        Name = case.Name
+                        Name = renderCaseName
                         Schema = fieldsObject
                         Description = caseDescription
                     }
 
                     SchemaNode.Object {
                         Properties = [ caseProp ]
-                        Required = [ case.Name ]
+                        Required = [ renderCaseName ]
                         AdditionalProperties = false
-                        TypeId = Some case.Name
+                        TypeId = Some renderCaseName
                         Description = caseDescription
                         Title = None
                     }
@@ -725,7 +743,7 @@ module SchemaAnalyzer =
                 // Untagged: no discriminator, just fields directly
                 if Array.isEmpty fields then
                     // Fieldless case: serialize as case name string
-                    SchemaNode.Const(case.Name, PrimitiveType.String)
+                    SchemaNode.Const(renderCaseName, PrimitiveType.String)
                 else
                     // Build object with just the fields (no discriminator)
                     let properties = ResizeArray<PropertySchema>()
@@ -760,7 +778,7 @@ module SchemaAnalyzer =
                         Properties = Seq.toList properties
                         Required = Seq.toList required
                         AdditionalProperties = false
-                        TypeId = Some case.Name
+                        TypeId = Some renderCaseName
                         Description = caseDescription
                         Title = None
                     }
@@ -777,16 +795,16 @@ module SchemaAnalyzer =
                 // so the order becomes: [referenced type, case using it, ...].
                 let caseRefs = ResizeArray<SchemaNode>()
                 for case in cases do
-                    let caseSchema = buildCaseSchema case
-                    definitions.[case.Name] <- caseSchema
-                    caseRefs.Add(SchemaNode.Ref case.Name)
+                    let caseName, caseSchema = buildCaseSchema case
+                    definitions.[caseName] <- caseSchema
+                    caseRefs.Add(SchemaNode.Ref caseName)
                 SchemaNode.AnyOf(Seq.toList caseRefs)
             else
                 // Non-root DU: inline case schemas in AnyOf (translator nests them)
-                let caseSchemas = ResizeArray<SchemaNode>()
+                let caseSchemas = ResizeArray<string * SchemaNode>()
                 for case in cases do
                     caseSchemas.Add(buildCaseSchema case)
-                SchemaNode.AnyOf(Seq.toList caseSchemas)
+                SchemaNode.AnyOf(Seq.toList caseSchemas |> List.map snd)
 
         // Start analysis
         visiting.Add targetType |> ignore

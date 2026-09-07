@@ -207,9 +207,9 @@ let duTests =
 
         test "DU with array of records creates intermediate definition" {
             let doc = analyze<DUWithRecArray>
-            Expect.isTrue (hasDef "TestRecordOf" doc) "Intermediate array definition"
-            match getDef "TestRecordOf" doc with
-            | SchemaNode.Array (SchemaNode.Ref "TestRecord") -> ()
+            Expect.isTrue (hasDef "testRecordOf" doc) "Intermediate array definition"
+            match getDef "testRecordOf" doc with
+            | SchemaNode.Array (SchemaNode.Ref "testRecord") -> ()
             | other -> failtestf "Expected Array(Ref TestRecord), got %A" other
         }
     ]
@@ -446,13 +446,13 @@ let configTests =
                 // WithNamedFields case should have discriminator named "type"
                 let namedRef = schemas.[2]
                 match namedRef with
-                | SchemaNode.Ref "WithNamedFields" ->
-                    let namedDef = getDef "WithNamedFields" doc
+                | SchemaNode.Ref "withNamedFields" ->
+                    let namedDef = getDef "withNamedFields" doc
                     match namedDef with
                     | SchemaNode.Object obj ->
                         Expect.equal obj.Properties.[0].Name "type" "Discriminator uses custom name"
                         match obj.Properties.[0].Schema with
-                        | SchemaNode.Const("WithNamedFields", PrimitiveType.String) -> ()
+                        | SchemaNode.Const("withNamedFields", PrimitiveType.String) -> ()
                         | other -> failtestf "Expected Const, got %A" other
                         Expect.contains obj.Required "type" "Custom discriminator required"
                     | other -> failtestf "Expected Object, got %A" other
@@ -546,7 +546,7 @@ let choiceTests =
                 | SchemaNode.AnyOf schemas ->
                     Expect.equal schemas.Length 2 "Should have 2 alternatives"
                     match schemas.[0], schemas.[1] with
-                    | SchemaNode.Primitive(PrimitiveType.String, None), SchemaNode.Ref "TestRecord" -> ()
+                    | SchemaNode.Primitive(PrimitiveType.String, None), SchemaNode.Ref "testRecord" -> ()
                     | other1, other2 -> failtestf "Expected String and Ref TestRecord, got %A and %A" other1 other2
                 | other -> failtestf "Expected AnyOf, got %A" other
             | other -> failtestf "Expected Object, got %A" other

@@ -87,6 +87,7 @@ type UnionCaseDescriptionAttribute(caseName: string, description: string) =
     inherit System.Attribute()
     member val CaseName = caseName
     member val Description = description
+    member val RenderName = caseName with get,set
     member val FieldDescriptions: (string * string) array = [||] with get,set
 
 /// The result of analyzing a type: a root schema plus named definitions.

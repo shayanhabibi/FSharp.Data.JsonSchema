@@ -22,32 +22,36 @@ type SchemaGeneratorConfig = {
     RecordFieldsRequired: bool
     /// Whether fieldless DUs are represented as string enums.
     UnwrapFieldlessTags: bool
+    /// Naming policy for types and unions. Applies after the TypeIdResolver.
+    TypeNamingPolicy: string -> string
 }
 
 /// Functions for creating and working with SchemaGeneratorConfig.
 module SchemaGeneratorConfig =
 
     /// Convert the first character of a string to lowercase (camelCase).
-    let private camelCase (name: string) =
+    let camelCase (name: string) =
         if String.IsNullOrEmpty(name) then name
         elif name.Length = 1 then string (Char.ToLowerInvariant name.[0])
         else string (Char.ToLowerInvariant name.[0]) + name.Substring(1)
 
     /// Capitalize the first character (matching NJsonSchema's DefaultTypeNameGenerator behavior).
-    let private pascalCase (name: string) =
+    let pascalCase (name: string) =
         if String.IsNullOrEmpty(name) then name
         elif name.Length = 1 then string (Char.ToUpperInvariant name.[0])
         else string (Char.ToUpperInvariant name.[0]) + name.Substring(1)
 
     /// Default type ID resolver: uses the type's short name with PascalCase first character.
     /// For generic types, appends "Of" + type argument names (e.g., "PaginatedResultOfTestRecord").
-    let private defaultTypeIdResolver (ty: Type) =
+    let defaultTypeIdResolver (ty: Type) =
         if ty.IsGenericType then
             let baseName = ty.Name.Substring(0, ty.Name.IndexOf('`'))
             let args = ty.GetGenericArguments() |> Array.map (fun a -> pascalCase a.Name)
-            pascalCase baseName + "Of" + String.Join("And", args)
+            // pascalCase baseName + "Of" + String.Join("And", args)
+            camelCase baseName + "Of" + String.Join("And", args)
         else
-            pascalCase ty.Name
+            // pascalCase ty.Name
+            camelCase ty.Name
 
     /// Default configuration matching current library behavior:
     /// InternalTag encoding, "kind" discriminator, camelCase naming,
@@ -63,4 +67,5 @@ module SchemaGeneratorConfig =
         UnwrapSingleCaseDU = false
         RecordFieldsRequired = true
         UnwrapFieldlessTags = true
+        TypeNamingPolicy = camelCase
     }
